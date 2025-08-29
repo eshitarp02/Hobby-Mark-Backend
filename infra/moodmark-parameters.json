@@ -1,0 +1,70 @@
+[
+  {
+    "ParameterKey": "S3BucketName",
+    "ParameterValue": "moodmark-user-logs"
+  },
+  {
+    "ParameterKey": "LambdaCodeBucket",
+    "ParameterValue": "moodmark-lambda-code-bucket"
+  },
+  {
+    "ParameterKey": "LogActivityLambdaFunctionName",
+    "ParameterValue": "log-activity"
+  },
+  {
+    "ParameterKey": "GetSuggestionLambdaFunctionName",
+    "ParameterValue": "get-suggestion"
+  },
+  {
+    "ParameterKey": "LogActivityZipKey",
+    "ParameterValue": "log_activity.zip"
+  },
+  {
+    "ParameterKey": "GetSuggestionZipKey",
+    "ParameterValue": "get_suggestion.zip"
+  },
+  {
+    "ParameterKey": "ApiGatewayName",
+    "ParameterValue": "MoodMarkAPI"
+  },
+  {
+    "ParameterKey": "GoogleAiApiKey",
+    "ParameterValue": "your-google-ai-api-key"
+  },
+  {
+    "ParameterKey": "PrivateSubnet2Cidr",
+    "ParameterValue": "10.0.3.0/24"
+  },
+  {
+    "ParameterKey": "DocumentDBClusterName",
+    "ParameterValue": "moodmark-docdb-cluster"
+  },
+  {
+    "ParameterKey": "DocumentDBInstanceClass",
+    "ParameterValue": "db.t3.medium"
+  },
+  {
+    "ParameterKey": "UserAuthZipKey",
+    "ParameterValue": "user_auth.zip"
+  },
+  {
+    "ParameterKey": "GetUserActivitiesLambdaFunctionName",
+    "ParameterValue": "get-user-activities"
+  },
+  {
+    "ParameterKey": "GetUserActivitiesZipKey",
+    "ParameterValue": "get_activitieslogperuserid.zip"
+  },
+  {
+    "ParameterKey": "DocumentDBPassword",
+    "ParameterValue": "yourStrongPassword"
+  },
+  {
+    "ParameterKey": "DocumentDBUser",
+    "ParameterValue": "moodmarkuser"
+  },
+  {
+    "ParameterKey": "PublicSubnet1Cidr",
+    "ParameterValue": "10.0.1.0/24"
+  }
+]

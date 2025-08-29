@@ -1,0 +1,9 @@
+{
+  "resource": "/get-suggestion",
+  "path": "/prod/get-suggestion",
+  "httpMethod": "GET",
+  "headers": { "accept": "application/json" },
+  "queryStringParameters": { "userId": "64d8e5c5-78c3-41f8-bf16-ffa540baedf5" },
+  "requestContext": {},
+  "isBase64Encoded": false
+}

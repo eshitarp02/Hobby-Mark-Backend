@@ -1,0 +1,89 @@
+name: Deploy MoodMark Infra to AWS
+
+on:
+  push:
+    branches:
+      - main
+      - FrontEndIntegration
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC AssumeRole)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: List files for debug
+        run: ls -l backend
+
+      - name: Extract LambdaCodeBucket from parameters file
+        id: extract_bucket
+        run: |
+          echo "bucket=$(jq -r '.[] | select(.ParameterKey == "LambdaCodeBucket") | .ParameterValue' infra/moodmark-parameters.json)" >> $GITHUB_OUTPUT
+
+      - name: Create LambdaCodeBucket if it does not exist
+        run: |
+          if ! aws s3api head-bucket --bucket "${{ steps.extract_bucket.outputs.bucket }}" 2>/dev/null; then
+            aws s3api create-bucket --bucket "${{ steps.extract_bucket.outputs.bucket }}" --region ${{ secrets.AWS_REGION }} --create-bucket-configuration LocationConstraint=${{ secrets.AWS_REGION }}
+          else
+            echo "Bucket ${{ steps.extract_bucket.outputs.bucket }} already exists."
+          fi
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+
+      - name: Build user_auth Lambda package in Amazon Linux 2 (Docker)
+        run: |
+          docker run --rm -v ${{ github.workspace }}/backend:/var/task -w /var/task public.ecr.aws/sam/build-python3.9 \
+            /bin/bash -c "yum install -y gcc python3-devel make openssl-devel libffi-devel python3-pip git patch && rm -rf /var/task/package && find /var/task -name '*bcrypt*' -delete && find /var/task -name '*.so' -delete && find /var/task -name '*.pyc' -delete && pip install --upgrade --no-cache-dir -c /var/task/constraints.txt pip==23.0.1 setuptools==65.5.0 wheel==0.40.0 importlib-metadata==4.8.3 setuptools-scm==6.4.2 hatchling==1.21.0 pluggy==1.0.0 tomli==2.0.1 packaging==21.3 typing-extensions==4.7.1 dnspython==2.3.0 -v && pip cache purge && PIP_NO_BUILD_ISOLATION=1 pip install --no-cache-dir -c /var/task/constraints.txt passlib==1.7.4 pymongo==4.3.3 -t /var/task/package -v && PIP_NO_BUILD_ISOLATION=1 pip install --prefer-binary --no-cache-dir -c /var/task/constraints.txt boto3==1.28.57 requests==2.31.0 botocore==1.31.57 -t /var/task/package -v && cp /var/task/user_auth.py /var/task/package/ && cd /var/task/package && zip -r /var/task/user_auth.zip ."
+
+      - name: Build activity_api Lambda package in Amazon Linux 2 (Docker)
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/var/task -w /var/task public.ecr.aws/sam/build-python3.9 \
+            /bin/bash -c "set -e; yum install -y gcc python3-devel make openssl-devel libffi-devel python3-pip git patch; rm -rf /var/task/activity_package; find /var/task -name '*bcrypt*' -delete; find /var/task -name '*.so' -delete; find /var/task -name '*.pyc' -delete; pip install --upgrade --no-cache-dir pip setuptools wheel importlib-metadata setuptools-scm hatchling pluggy tomli packaging typing-extensions dnspython -v; pip cache purge; PIP_NO_BUILD_ISOLATION=1 pip install --no-cache-dir -r /var/task/backend/requirements.txt -t /var/task/activity_package -v; if [ ! -f /var/task/backend/activity_api.py ]; then echo 'ERROR: backend/activity_api.py not found in workspace.'; ls -l /var/task/backend; exit 1; fi; cp /var/task/backend/activity_api.py /var/task/activity_package/; cd /var/task/activity_package; zip -r /var/task/activity_api.zip .; cd /var/task; ls -l; "
+
+      - name: List files after activity_api build
+        run: |
+          ls -l
+
+      - name: Verify activity_api.zip exists
+        run: |
+          if [ ! -f activity_api.zip ]; then
+            echo "ERROR: activity_api.zip not found. Build step failed."
+            exit 1
+          fi
+      - name: Zip other Lambda code packages
+        run: |
+          cd backend
+          zip -r ../get_suggestion.zip get_suggestion.py
+          zip -r ../get_activitieslogperuserid.zip get_activitieslogperuserid.py
+          cd ..
+
+      - name: Upload Lambda deployment packages to S3
+        run: |
+          aws s3 cp backend/user_auth.zip s3://${{ steps.extract_bucket.outputs.bucket }}/user_auth.zip
+          aws s3 cp get_suggestion.zip s3://${{ steps.extract_bucket.outputs.bucket }}/get_suggestion.zip
+          aws s3 cp get_activitieslogperuserid.zip s3://${{ steps.extract_bucket.outputs.bucket }}/get_activitieslogperuserid.zip
+          aws s3 cp activity_api.zip s3://${{ steps.extract_bucket.outputs.bucket }}/activity_api.zip
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy CloudFormation stack
+        run: |
+          aws cloudformation deploy \
+            --template-file infra/moodmark-cloudformation.yaml \
+            --stack-name moodmark-stack \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides file://infra/moodmark-parameters.json

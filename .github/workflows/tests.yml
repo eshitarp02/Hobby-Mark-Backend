@@ -1,0 +1,20 @@
+on: [push, pull_request]
+jobs:
+name: Tests
+
+on: [push, pull_request]
+
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - run: pytest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml

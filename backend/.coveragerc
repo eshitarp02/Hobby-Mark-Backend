@@ -1,0 +1,12 @@
+[run]
+branch = True
+source = .
+omit =
+    */tests/*
+    */site-packages/*
+    */venv/*
+    */unZipped_package/*
+    */user_auth_package/*
+[report]
+show_missing = True
+skip_covered = False

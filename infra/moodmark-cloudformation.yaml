@@ -1,0 +1,683 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: MoodMark - S3, Lambda, API Gateway (MVP)
+
+Parameters:
+  PrivateSubnet2Cidr:
+    Type: String
+    Default: 10.0.3.0/24
+    Description: CIDR block for the second private subnet
+
+  PublicSubnet1Cidr:
+    Type: String
+    Default: 10.0.1.0/24
+    Description: CIDR block for the public subnet
+
+  DocumentDBClusterName:
+    Type: String
+    Default: moodmark-docdb-cluster
+    Description: Name for the DocumentDB cluster
+
+  DocumentDBInstanceClass:
+    Type: String
+    Default: db.t3.medium
+    Description: Instance class for DocumentDB
+
+  UserAuthZipKey:
+    Type: String
+    Default: user_auth.zip
+    Description: S3 key for User Auth Lambda deployment package
+
+  GetUserActivitiesLambdaFunctionName:
+    Type: String
+    Default: get-user-activities
+    Description: Name of the Lambda function to fetch user activities
+
+  GetUserActivitiesZipKey:
+    Type: String
+    Default: get_activitieslogperuserid.zip
+    Description: S3 key for get-user-activities Lambda deployment package
+  PrivateSubnet1Cidr:
+    Type: String
+    Default: 10.0.2.0/24
+    Description: CIDR block for the private subnet
+  LogActivityLambdaFunctionName:
+    Type: String
+    Default: log-activity
+    Description: Name for the Log Activity Lambda function
+
+  LogActivityZipKey:
+    Type: String
+    Default: log_activity.zip
+    Description: S3 key for Log Activity Lambda deployment package
+  GetSuggestionZipKey:
+    Type: String
+    Default: get_suggestion.zip
+    Description: S3 key for Get Suggestion Lambda deployment package
+
+  S3BucketName:
+    Type: String
+    Default: moodmark-user-logs
+    Description: S3 bucket for storing user activity logs
+
+  GetSuggestionLambdaFunctionName:
+    Type: String
+    Default: get-suggestion
+    Description: Name for the Get Suggestion Lambda function
+  DocumentDBUser:
+    Type: String
+    Default: moodmarkuser
+    Description: DocumentDB username
+
+  DocumentDBPassword:
+    Type: String
+    NoEcho: true
+    Description: DocumentDB password
+
+  LambdaCodeBucket:
+    Type: String
+    Description: S3 bucket containing Lambda deployment packages
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+    Description: VPC CIDR block
+
+  ApiGatewayName:
+    Type: String
+    Default: MoodMarkAPI
+    Description: Name for the API Gateway
+
+  GoogleAiApiKey:
+    Type: String
+    Description: Google AI API Key for Lambda (if needed)
+
+Resources:
+  ActivityApiV2Lambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: activity-api-v2
+      Handler: activity_api_v2.lambda_handler
+      Role: !GetAtt ActivityApiLambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 15
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnet1
+        SecurityGroupIds:
+          - !Ref DocumentDBSecurityGroup
+      Environment:
+        Variables:
+          DOCDB_URI: !Sub "mongodb://${DocumentDBCluster.Endpoint}:27017/?retryWrites=false"
+          DOCDB_USER: !Ref DocumentDBUser
+          DOCDB_PASS: !Ref DocumentDBPassword
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: activity_api_v2.zip
+
+  ActivitySuggestionV2Resource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ParentId: !GetAtt LogActivityApi.RootResourceId
+      PathPart: activity-suggestion-v2
+
+  ActivitySuggestionV2Method:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ResourceId: !Ref ActivitySuggestionV2Resource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - { LambdaArn: !GetAtt ActivityApiV2Lambda.Arn }
+
+  LambdaInvokePermissionActivityApiV2:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ActivityApiV2Lambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+  ActivitySuggestionResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ParentId: !GetAtt LogActivityApi.RootResourceId
+      PathPart: activity-suggestion
+
+  ActivitySuggestionMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ResourceId: !Ref ActivitySuggestionResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - { LambdaArn: !GetAtt ActivityApiLambda.Arn }
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: MoodMarkVPC
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet1Cidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet2Cidr
+      AvailabilityZone: !Select [1, !GetAZs '']
+
+  DocumentDBSubnetGroup:
+    Type: AWS::DocDB::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: MoodMark DocumentDB Subnet Group
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+
+  DocumentDBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: DocumentDB SG
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 27017
+          ToPort: 27017
+          CidrIp: !Ref VpcCidr
+
+  DocumentDBCluster:
+    Type: AWS::DocDB::DBCluster
+    Properties:
+      DBClusterIdentifier: !Ref DocumentDBClusterName
+      MasterUsername: !Ref DocumentDBUser
+      MasterUserPassword: !Ref DocumentDBPassword
+      VpcSecurityGroupIds:
+        - !Ref DocumentDBSecurityGroup
+      DBSubnetGroupName: !Ref DocumentDBSubnetGroup
+
+  DocumentDBInstance:
+    Type: AWS::DocDB::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref DocumentDBCluster
+      DBInstanceClass: !Ref DocumentDBInstanceClass
+
+  LambdaDocDBExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: LambdaDocDBPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  UserAuthLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: user-auth
+      Handler: user_auth.lambda_handler
+      Role: !GetAtt LambdaDocDBExecutionRole.Arn
+      Runtime: python3.9
+      Timeout: 15
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnet1
+        SecurityGroupIds:
+          - !Ref DocumentDBSecurityGroup
+      Environment:
+        Variables:
+          DOCDB_URI: !Sub "mongodb://${DocumentDBCluster.Endpoint}:27017/?retryWrites=false"
+          DOCDB_USER: !Ref DocumentDBUser
+          DOCDB_PASS: !Ref DocumentDBPassword
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref UserAuthZipKey
+
+  RegisterResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ParentId: !GetAtt LogActivityApi.RootResourceId
+      PathPart: register
+
+  RegisterMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ResourceId: !Ref RegisterResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - { LambdaArn: !GetAtt UserAuthLambda.Arn }
+  ActivityApiLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: LambdaDocDBPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  ActivityApiLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: activity-api
+      Handler: activity_api.lambda_handler
+      Role: !GetAtt ActivityApiLambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 15
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnet1
+        SecurityGroupIds:
+          - !Ref DocumentDBSecurityGroup
+      Environment:
+        Variables:
+          DOCDB_URI: !Sub "mongodb://${DocumentDBCluster.Endpoint}:27017/?retryWrites=false"
+          DOCDB_USER: !Ref DocumentDBUser
+          DOCDB_PASS: !Ref DocumentDBPassword
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: activity_api.zip
+
+  ActivityLogGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ResourceId: !Ref ActivityLogResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - { LambdaArn: !GetAtt ActivityApiLambda.Arn }
+  ActivityLogResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ParentId: !GetAtt LogActivityApi.RootResourceId
+      PathPart: activity-log
+
+  ActivityLogMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ResourceId: !Ref ActivityLogResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - { LambdaArn: !GetAtt ActivityApiLambda.Arn }
+
+  ActivityLogPutMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ResourceId: !Ref ActivityLogResource
+      HttpMethod: PUT
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - { LambdaArn: !GetAtt ActivityApiLambda.Arn }
+
+  UserLogsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ParentId: !GetAtt LogActivityApi.RootResourceId
+      PathPart: user-logs
+
+  UserLogsIdResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ParentId: !Ref UserLogsResource
+      PathPart: '{userId}'
+
+  UserLogsIdMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ResourceId: !Ref UserLogsIdResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - { LambdaArn: !GetAtt ActivityApiLambda.Arn }
+
+  LambdaInvokePermissionActivityApi:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ActivityApiLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+
+  LoginResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ParentId: !GetAtt LogActivityApi.RootResourceId
+      PathPart: login
+
+  LoginMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ResourceId: !Ref LoginResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - { LambdaArn: !GetAtt UserAuthLambda.Arn }
+
+  LambdaInvokePermissionUserAuth:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt UserAuthLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+  MoodMarkS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref S3BucketName
+
+  LogActivityLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: S3WritePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub arn:aws:s3:::${S3BucketName}/*
+
+  LogActivityLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref LogActivityLambdaFunctionName
+      Handler: log_activity.lambda_handler
+      Role: !GetAtt LogActivityLambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 10
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref S3BucketName
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LogActivityZipKey
+
+  GetSuggestionLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: LambdaVpcPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: "*"
+
+  GetSuggestionLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref GetSuggestionLambdaFunctionName
+      Handler: get_suggestion.lambda_handler
+      Role: !GetAtt GetSuggestionLambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 15
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnet1
+        SecurityGroupIds:
+          - !Ref DocumentDBSecurityGroup
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref S3BucketName
+          DOCDB_URI: !Sub "mongodb://${DocumentDBCluster.Endpoint}:27017/?retryWrites=false"
+          DOCDB_USER: !Ref DocumentDBUser
+          DOCDB_PASS: !Ref DocumentDBPassword
+          DB_NAME: moodmark
+          COLL_ACTIVITIES: activities
+          MODEL_PROVIDER: bedrock
+          BEDROCK_MODEL_ID: anthropic.claude-3.5-sonnet-20240620-v1:0
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref GetSuggestionZipKey
+
+  GetUserActivitiesLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: S3ReadPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::${S3BucketName}
+                  - !Sub arn:aws:s3:::${S3BucketName}/*
+
+  GetUserActivitiesLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref GetUserActivitiesLambdaFunctionName
+      Handler: get_activitieslogperuserid.lambda_handler
+      Role: !GetAtt GetUserActivitiesLambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 15
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref S3BucketName
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref GetUserActivitiesZipKey
+
+  LogActivityApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Ref ApiGatewayName
+
+  LogActivityResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ParentId: !GetAtt LogActivityApi.RootResourceId
+      PathPart: log-activity
+
+  LogActivityMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ResourceId: !Ref LogActivityResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - { LambdaArn: !GetAtt LogActivityLambda.Arn }
+
+  GetSuggestionResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ParentId: !GetAtt LogActivityApi.RootResourceId
+      PathPart: get-suggestion
+
+  GetSuggestionMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ResourceId: !Ref GetSuggestionResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - { LambdaArn: !GetAtt GetSuggestionLambda.Arn }
+
+  GetUserActivitiesResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ParentId: !GetAtt LogActivityApi.RootResourceId
+      PathPart: get-user-activities
+
+  GetUserActivitiesMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref LogActivityApi
+      ResourceId: !Ref GetUserActivitiesResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - { LambdaArn: !GetAtt GetUserActivitiesLambda.Arn }
+
+  LambdaInvokePermissionLog:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt LogActivityLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+
+  LambdaInvokePermissionSuggest:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt GetSuggestionLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+
+  LambdaInvokePermissionGetUserActivities:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt GetUserActivitiesLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+
+Outputs:
+  ApiUrl:
+    Description: "Base URL for MoodMark API"
+    Value: !Sub "https://${LogActivityApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+  S3Bucket:
+    Description: "S3 bucket for activity logs"
+    Value: !Ref S3BucketName

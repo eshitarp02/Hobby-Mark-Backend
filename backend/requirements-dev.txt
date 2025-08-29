@@ -1,0 +1,6 @@
+pytest==8.*
+pytest-cov==5.*
+pytest-mock==3.*
+mongomock==4.*
+# moto[s3,dynamodb]==5.*  # Disabled due to Windows long path issue
+requests==2.*
